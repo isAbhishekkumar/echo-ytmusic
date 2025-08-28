@@ -9,10 +9,12 @@ plugins {
 dependencies {
     compileOnly(libs.echo.common)
     compileOnly(libs.kotlin.stdlib)
+    compileOnly(libs.newpipe.extractor)
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.echo.common)
+    testImplementation(libs.newpipe.extractor)
 }
 
 java {
