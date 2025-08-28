@@ -8,6 +8,8 @@ import dev.brahmkshatriya.echo.common.helpers.ClientException
 import dev.brahmkshatriya.echo.common.helpers.ContinuationCallback.Companion.await
 import dev.brahmkshatriya.echo.common.helpers.PagedData
 import dev.brahmkshatriya.echo.common.models.*
+import dev.brahmkshatriya.echo.common.models.Feed.Companion.toFeed
+import dev.brahmkshatriya.echo.common.models.Feed.Companion.toFeedData
 import dev.brahmkshatriya.echo.common.models.ImageHolder.Companion.toImageHolder
 import dev.brahmkshatriya.echo.common.models.NetworkRequest.Companion.toGetRequest
 import dev.brahmkshatriya.echo.common.models.Streamable.Media.Companion.toMedia
@@ -82,7 +84,7 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
 
     private fun getBrowsePage(): Feed.Data<Shelf> = PagedData.Single {
         emptyList<Shelf>()
-    }
+    }.toFeedData()
 
     private suspend fun searchYouTube(query: String, filter: String, page: Int?): Pair<List<Shelf>, Int?> {
         return safeExecute("searchYouTube", {
@@ -100,11 +102,10 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
                             title = infoItem.name,
                             cover = null,
                             duration = infoItem.duration,
-                            artists = listOf(Artist("Unknown", "", emptyList(), emptyMap(), false, false, false, false, false)),
+                            artists = listOf(Artist("Unknown")),
                             album = null,
                             releaseDate = null,
-                            isExplicit = false,
-                            isPlayable = Track.Playable.TRUE
+                            isExplicit = false
                         )
                     }
                     else -> null
@@ -150,10 +151,7 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
         streamable: Streamable, 
         isDownload: Boolean
     ): Streamable.Media {
-        return Streamable.Media.Server(
-            listOf(streamable.id.toGetRequest().toSource()),
-            false
-        )
+        return Streamable.Media.Background(streamable.id.toGetRequest())
     }
 
     override suspend fun loadFeed(track: Track): Feed<Shelf>? {
@@ -198,22 +196,20 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
                     title = "Never Gonna Give You Up",
                     cover = null,
                     duration = 213,
-                    artists = listOf(Artist("Rick Astley", "", emptyList(), emptyMap(), false, false, false, false, false)),
+                    artists = listOf(Artist("Rick Astley")),
                     album = null,
                     releaseDate = null,
-                    isExplicit = false,
-                    isPlayable = Track.Playable.TRUE
+                    isExplicit = false
                 ),
                 Track(
                     id = "https://www.youtube.com/watch?v=9bZkp7q19f0",
                     title = "Gangnam Style",
                     cover = null,
                     duration = 252,
-                    artists = listOf(Artist("PSY", "", emptyList(), emptyMap(), false, false, false, false, false)),
+                    artists = listOf(Artist("PSY")),
                     album = null,
                     releaseDate = null,
-                    isExplicit = false,
-                    isPlayable = Track.Playable.TRUE
+                    isExplicit = false
                 )
             )
             
@@ -253,7 +249,18 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
                 val (items, nextPage) = loader(page)
                 return Feed.Page(items, nextPage?.toString())
             }
-        }
+            
+            override suspend fun loadAllInternal(): List<T> {
+                val (items, _) = loader(null)
+                return items
+            }
+            
+            override fun clear() {}
+            override fun invalidate(continuation: String?) {}
+            override fun <R : Any> map(block: suspend (Result<List<T>>) -> List<R>): PagedData<R> {
+                TODO("Not yet implemented")
+            }
+        }.toFeedData()
     }
 
     // ===== DOWNLOADER IMPLEMENTATION =====
