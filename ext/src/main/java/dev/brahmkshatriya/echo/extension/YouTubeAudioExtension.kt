@@ -1,28 +1,36 @@
 package dev.brahmkshatriya.echo.extension
 
-import dev.brahmkshatriya.echo.common.clients.*
+import dev.brahmkshatriya.echo.common.clients.ExtensionClient
+import dev.brahmkshatriya.echo.common.clients.HomeFeedClient
+import dev.brahmkshatriya.echo.common.clients.SearchFeedClient
+import dev.brahmkshatriya.echo.common.clients.TrackClient
+import dev.brahmkshatriya.echo.common.helpers.ClientException
 import dev.brahmkshatriya.echo.common.helpers.ContinuationCallback.Companion.await
+import dev.brahmkshatriya.echo.common.helpers.PagedData
 import dev.brahmkshatriya.echo.common.models.*
+import dev.brahmkshatriya.echo.common.models.EchoMediaItem.Companion.toMediaItem
+import dev.brahmkshatriya.echo.common.models.Feed.Companion.toFeed
+import dev.brahmkshatriya.echo.common.models.ImageHolder.Companion.toImageHolder
+import dev.brahmkshatriya.echo.common.models.Streamable.Media.Companion.toMedia
+import dev.brahmkshatriya.echo.common.models.Streamable.Source.Companion.toSource
+import dev.brahmkshatriya.echo.common.models.Track.Playable
 import dev.brahmkshatriya.echo.common.settings.Setting
 import dev.brahmkshatriya.echo.common.settings.Settings
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.exceptions.ExtractionException
 import org.schabi.newpipe.extractor.linkhandler.LinkHandlerFactory
 import org.schabi.newpipe.extractor.search.SearchExtractor
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.AudioStream
-import org.schabi.newpipe.extractor.exceptions.ExtractionException
 import java.io.IOException
 
-// For more information on which clients to use
-// visit https://brahmkshatriya.github.io/echo/common/dev.brahmkshatriya.echo.common/
 class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, HomeFeedClient {
 
     // Initialize NewPipe with YouTube service
     private val youtubeService = ServiceList.YouTube
-    private val searchExtractor: SearchExtractor = youtubeService.searchExtractor
 
     // Every extension has its own settings instance
     private lateinit var setting: Settings
@@ -39,61 +47,159 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
         println("YouTube Audio Extension initialized")
     }
 
-    // Simple HTTP client usage example
     override suspend fun getSettingItems(): List<Setting> {
         return emptyList()
     }
 
     // ===== SEARCH FEED CLIENT IMPLEMENTATION =====
 
-    override suspend fun loadSearchFeed(query: String): Feed {
-        return Feed(
-            tabs = listOf("Videos", "Playlists", "Channels"),
-            context = query
-        )
+    override suspend fun loadSearchFeed(query: String): Feed<Shelf> {
+        return if (query.isBlank()) {
+            Feed(listOf()) { getBrowsePage() }
+        } else {
+            val tabs = listOf(
+                Tab("Videos", "videos"),
+                Tab("Playlists", "playlists"),
+                Tab("Channels", "channels")
+            )
+            Feed(tabs) { tab ->
+                when (tab?.id) {
+                    "videos" -> searchVideos(query)
+                    "playlists" -> searchPlaylists(query)
+                    "channels" -> searchChannels(query)
+                    else -> searchVideos(query)
+                }.toFeedData()
+            }
+        }
     }
 
-    override suspend fun loadSearchFeed(query: String, tab: String?): PagedData<MediaItems> {
-        return object : PagedData<MediaItems> {
-            override suspend fun loadPage(page: Page?): Page<MediaItems> {
-                return safeExecute("loadSearchFeed", {
-                    val searchQuery = if (tab == null) query else "$query $tab"
-                    logInfo("loadSearchFeed", "Searching for: $searchQuery")
-                    
-                    val extractor = youtubeService.getSearchExtractor(searchQuery, listOf("videos"), "")
-                    extractor.fetchPage()
-                    
-                    val items = extractor.relatedItems.mapNotNull { infoItem ->
-                        when (infoItem) {
-                            is org.schabi.newpipe.extractor.stream.StreamInfoItem -> {
-                                MediaItems.Item.Track(
-                                    Track(
-                                        id = infoItem.url,
-                                        title = infoItem.name,
-                                        cover = infoItem.thumbnailUrl,
-                                        duration = infoItem.duration,
-                                        artists = listOf(Artist(infoItem.uploaderName, infoItem.uploaderUrl)),
-                                        album = null,
-                                        releaseDate = null,
-                                        isExplicit = false,
-                                        isPlayable = true
-                                    )
-                                )
-                            }
-                            else -> null
+    private fun getBrowsePage(): PagedData.Single<Shelf> {
+        return PagedData.Single {
+            listOf(
+                Shelf.Lists.Tracks(
+                    "trending",
+                    "Trending",
+                    listOf(
+                        Track(
+                            id = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                            title = "Never Gonna Give You Up",
+                            cover = "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg".toImageHolder(),
+                            duration = 213,
+                            artists = listOf(Artist("Rick Astley", "https://www.youtube.com/@RickAstley")),
+                            album = null,
+                            releaseDate = null,
+                            isExplicit = false,
+                            isPlayable = Playable.TRUE
+                        ),
+                        Track(
+                            id = "https://www.youtube.com/watch?v=9bZkp7q19f0",
+                            title = "Gangnam Style",
+                            cover = "https://i.ytimg.com/vi/9bZkp7q19f0/default.jpg".toImageHolder(),
+                            duration = 252,
+                            artists = listOf(Artist("PSY", "https://www.youtube.com/@officialpsy")),
+                            album = null,
+                            releaseDate = null,
+                            isExplicit = false,
+                            isPlayable = Playable.TRUE
+                        )
+                    )
+                )
+            )
+        }
+    }
+
+    private fun searchVideos(query: String): PagedData<Shelf> {
+        return paged { page ->
+            safeExecute("searchVideos", {
+                val extractor = youtubeService.getSearchExtractor(query, listOf("videos"), "")
+                extractor.fetchPage()
+                
+                val items = extractor.initialPage.items.mapNotNull { infoItem ->
+                    when (infoItem) {
+                        is org.schabi.newpipe.extractor.stream.StreamInfoItem -> {
+                            Track(
+                                id = infoItem.url,
+                                title = infoItem.name,
+                                cover = infoItem.thumbnailUrl.toImageHolder(),
+                                duration = infoItem.duration,
+                                artists = listOf(Artist(infoItem.uploaderName, infoItem.uploaderUrl)),
+                                album = null,
+                                releaseDate = null,
+                                isExplicit = false,
+                                isPlayable = Playable.TRUE
+                            )
                         }
+                        else -> null
                     }
-                    
-                    logInfo("loadSearchFeed", "Found ${items.size} results")
-                    Page(items, if (extractor.hasNextPage()) Page(extractor.nextPage) else null)
-                }, Page(emptyList(), null))
-            }
+                }
+                
+                val tracks = items.map { it.toMediaItem() }
+                val shelf = Shelf.Lists.Tracks("search_videos_$page", "Videos", tracks)
+                listOf(shelf) to if (extractor.hasNextPage()) page + 1 else null
+            }, emptyList<Shelf>() to null)
+        }
+    }
+
+    private fun searchPlaylists(query: String): PagedData<Shelf> {
+        return paged { page ->
+            safeExecute("searchPlaylists", {
+                val extractor = youtubeService.getSearchExtractor(query, listOf("playlists"), "")
+                extractor.fetchPage()
+                
+                val items = extractor.initialPage.items.mapNotNull { infoItem ->
+                    when (infoItem) {
+                        is org.schabi.newpipe.extractor.playlist.PlaylistInfoItem -> {
+                            Playlist(
+                                id = infoItem.url,
+                                title = infoItem.name,
+                                cover = infoItem.thumbnailUrl.toImageHolder(),
+                                description = infoItem.uploaderName,
+                                author = Artist(infoItem.uploaderName, infoItem.uploaderUrl),
+                                trackCount = infoItem.streamCount,
+                                isEditable = false
+                            )
+                        }
+                        else -> null
+                    }
+                }
+                
+                val playlists = items.map { it.toMediaItem() }
+                val shelf = Shelf.Lists.Playlists("search_playlists_$page", "Playlists", playlists)
+                listOf(shelf) to if (extractor.hasNextPage()) page + 1 else null
+            }, emptyList<Shelf>() to null)
+        }
+    }
+
+    private fun searchChannels(query: String): PagedData<Shelf> {
+        return paged { page ->
+            safeExecute("searchChannels", {
+                val extractor = youtubeService.getSearchExtractor(query, listOf("channels"), "")
+                extractor.fetchPage()
+                
+                val items = extractor.initialPage.items.mapNotNull { infoItem ->
+                    when (infoItem) {
+                        is org.schabi.newpipe.extractor.channel.ChannelInfoItem -> {
+                            Artist(
+                                id = infoItem.url,
+                                name = infoItem.name,
+                                cover = infoItem.thumbnailUrl.toImageHolder(),
+                                description = infoItem.description
+                            )
+                        }
+                        else -> null
+                    }
+                }
+                
+                val artists = items.map { it.toMediaItem() }
+                val shelf = Shelf.Lists.Artists("search_channels_$page", "Channels", artists)
+                listOf(shelf) to if (extractor.hasNextPage()) page + 1 else null
+            }, emptyList<Shelf>() to null)
         }
     }
 
     // ===== TRACK CLIENT IMPLEMENTATION =====
 
-    override suspend fun loadTrack(track: Track, refresh: Boolean): Track {
+    override suspend fun loadTrack(track: Track, isDownload: Boolean): Track {
         return safeExecute("loadTrack", {
             val streamUrl = track.id
             logInfo("loadTrack", "Loading track: ${track.title}")
@@ -104,87 +210,133 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
             val audioStreams = extractor.audioStreams
             logInfo("loadTrack", "Found ${audioStreams.size} audio streams")
             
-            track.copy(
-                servers = audioStreams.map { audioStream ->
-                    Streamable(
-                        id = audioStream.url,
-                        quality = audioStream.getFormatText(),
-                        format = audioStream.mimeType ?: "audio/*",
-                        bitrate = audioStream.averageBitrate,
-                        size = audioStream.contentLength,
-                        headers = mapOf()
+            val streamables = audioStreams.map { audioStream ->
+                Streamable(
+                    id = audioStream.url ?: "",
+                    type = Streamable.MediaType.Server,
+                    quality = audioStream.getFormatText(),
+                    extras = mapOf(
+                        "format" to (audioStream.mimeType ?: "audio/*"),
+                        "bitrate" to audioStream.averageBitrate.toString(),
+                        "size" to audioStream.contentLength?.toString()
                     )
-                }
+                )
+            }
+            
+            track.copy(
+                extras = mapOf("streamables" to streamables)
             )
         }, track)
     }
 
-    override suspend fun loadStreamableMedia(streamable: Streamable, refresh: Boolean): StreamableMedia {
-        return StreamableMedia(
-            url = streamable.id,
-            format = streamable.format,
-            headers = streamable.headers,
-            bitrate = streamable.bitrate,
-            size = streamable.size
+    override suspend fun loadStreamableMedia(
+        streamable: Streamable,
+        isDownload: Boolean
+    ): Streamable.Media {
+        return Streamable.Media.Server(
+            streamable.id.toGetRequest(),
+            headers = mapOf()
         )
     }
 
     // ===== HOME FEED CLIENT IMPLEMENTATION =====
 
-    override suspend fun loadHomeFeed(): Feed {
-        return Feed(
-            tabs = listOf("Trending", "Music", "Recommended"),
-            context = "home"
+    override suspend fun loadHomeFeed(): Feed<Shelf> {
+        val tabs = listOf(
+            Tab("Trending", "trending"),
+            Tab("Music", "music"),
+            Tab("Recommended", "recommended")
         )
+        return Feed(tabs) { tab ->
+            when (tab?.id) {
+                "trending" -> getTrendingFeed()
+                "music" -> getMusicFeed()
+                "recommended" -> getRecommendedFeed()
+                else -> getTrendingFeed()
+            }.toFeedData()
+        }
     }
 
-    override suspend fun loadHomeFeed(tab: String?): PagedData<MediaItems> {
-        return object : PagedData<MediaItems> {
-            override suspend fun loadPage(page: Page?): Page<MediaItems> {
-                return safeExecute("loadHomeFeed", {
-                    val feedType = when (tab) {
-                        "Music" -> "music"
-                        "Trending" -> "trending"
-                        else -> "default"
-                    }
-                    
-                    logInfo("loadHomeFeed", "Loading feed type: $feedType")
-                    
-                    // For now, we'll simulate home feed content
-                    // In a real implementation, you'd extract from YouTube's actual feeds
-                    val items = listOf(
-                        MediaItems.Item.Track(
-                            Track(
-                                id = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                                title = "Never Gonna Give You Up",
-                                cover = "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg",
-                                duration = 213,
-                                artists = listOf(Artist("Rick Astley", "https://www.youtube.com/@RickAstley")),
-                                album = null,
-                                releaseDate = null,
-                                isExplicit = false,
-                                isPlayable = true
-                            )
+    private fun getTrendingFeed(): PagedData<Shelf> {
+        return PagedData.Single {
+            listOf(
+                Shelf.Lists.Tracks(
+                    "trending",
+                    "Trending",
+                    listOf(
+                        Track(
+                            id = "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                            title = "Never Gonna Give You Up",
+                            cover = "https://i.ytimg.com/vi/dQw4w9WgXcQ/default.jpg".toImageHolder(),
+                            duration = 213,
+                            artists = listOf(Artist("Rick Astley", "https://www.youtube.com/@RickAstley")),
+                            album = null,
+                            releaseDate = null,
+                            isExplicit = false,
+                            isPlayable = Playable.TRUE
                         ),
-                        MediaItems.Item.Track(
-                            Track(
-                                id = "https://www.youtube.com/watch?v=9bZkp7q19f0",
-                                title = "Gangnam Style",
-                                cover = "https://i.ytimg.com/vi/9bZkp7q19f0/default.jpg",
-                                duration = 252,
-                                artists = listOf(Artist("PSY", "https://www.youtube.com/@officialpsy")),
-                                album = null,
-                                releaseDate = null,
-                                isExplicit = false,
-                                isPlayable = true
-                            )
+                        Track(
+                            id = "https://www.youtube.com/watch?v=9bZkp7q19f0",
+                            title = "Gangnam Style",
+                            cover = "https://i.ytimg.com/vi/9bZkp7q19f0/default.jpg".toImageHolder(),
+                            duration = 252,
+                            artists = listOf(Artist("PSY", "https://www.youtube.com/@officialpsy")),
+                            album = null,
+                            releaseDate = null,
+                            isExplicit = false,
+                            isPlayable = Playable.TRUE
                         )
                     )
-                    
-                    logInfo("loadHomeFeed", "Loaded ${items.size} items")
-                    Page(items, null) // No pagination for now
-                }, Page(emptyList(), null))
-            }
+                )
+            )
+        }
+    }
+
+    private fun getMusicFeed(): PagedData<Shelf> {
+        return PagedData.Single {
+            listOf(
+                Shelf.Lists.Tracks(
+                    "music",
+                    "Music",
+                    listOf(
+                        Track(
+                            id = "https://www.youtube.com/watch?v=fJ9rUzIMcZQ",
+                            title = "Bohemian Rhapsody",
+                            cover = "https://i.ytimg.com/vi/fJ9rUzIMcZQ/default.jpg".toImageHolder(),
+                            duration = 354,
+                            artists = listOf(Artist("Queen", "https://www.youtube.com/@queenofficial")),
+                            album = null,
+                            releaseDate = null,
+                            isExplicit = false,
+                            isPlayable = Playable.TRUE
+                        )
+                    )
+                )
+            )
+        }
+    }
+
+    private fun getRecommendedFeed(): PagedData<Shelf> {
+        return PagedData.Single {
+            listOf(
+                Shelf.Lists.Tracks(
+                    "recommended",
+                    "Recommended",
+                    listOf(
+                        Track(
+                            id = "https://www.youtube.com/watch?v=hTWKbfoikeg",
+                            title = "Smells Like Teen Spirit",
+                            cover = "https://i.ytimg.com/vi/hTWKbfoikeg/default.jpg".toImageHolder(),
+                            duration = 301,
+                            artists = listOf(Artist("Nirvana", "https://www.youtube.com/@nirvana")),
+                            album = null,
+                            releaseDate = null,
+                            isExplicit = false,
+                            isPlayable = Playable.TRUE
+                        )
+                    )
+                )
+            )
         }
     }
 
@@ -208,6 +360,20 @@ class YouTubeAudioExtension : ExtensionClient, SearchFeedClient, TrackClient, Ho
         } catch (e: Exception) {
             logError(method, e)
             defaultValue
+        }
+    }
+
+    private fun <T> paged(operation: suspend (Int) -> Pair<List<T>, Int?>): PagedData<T> {
+        return object : PagedData<T> {
+            private var currentPage = 0
+            private var nextPage: Int? = 0
+
+            override suspend fun load(page: Int?): Pair<List<T>, Int?> {
+                val pageToLoad = page ?: nextPage ?: 0
+                val (items, nextPage) = operation(pageToLoad)
+                this.nextPage = nextPage
+                return items to nextPage
+            }
         }
     }
 
